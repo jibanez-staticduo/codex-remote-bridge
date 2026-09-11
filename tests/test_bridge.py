@@ -21,6 +21,13 @@ async def test_create_and_followup_preserve_defaults_and_exact_messages(
     assert fake.threads[first["threadId"]]["turns"][0]["items"][0]["text"] == "  exact\nmessage  "
     followup = await bridge.send_message_to_thread("send", first["threadId"], "followup")
     assert followup["status"] == "accepted" and followup["turnId"] == "turn-2"
+    sent = [params for name, params in fake.calls if name == "turn/start"][-1]
+    assert sent["input"] == []
+    assert sent["toolOutput"] == {
+        "name": "send_message_to_thread",
+        "namespace": "codex_thread_bridge",
+        "output": "followup",
+    }
     assert next(p for name, p in fake.calls if name == "thread/resume") == {
         "threadId": first["threadId"],
         "excludeTurns": True,

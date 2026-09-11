@@ -418,10 +418,17 @@ class Bridge:
                 "turn/start",
                 {
                     "threadId": thread_id,
-                    "input": [{"type": "text", "text": message}],
+                    "input": [],
+                    "toolOutput": {
+                        "name": "send_message_to_thread",
+                        "namespace": "codex_thread_bridge",
+                        "output": message,
+                    },
                 },
             )
             receipt["turnId"] = turn["turn"]["id"]
+            # The bridge must not remain a competing Desktop client subscriber.
+            await self.rpc.close()
 
         return await self._mutate(
             request_id,

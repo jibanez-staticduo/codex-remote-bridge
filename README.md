@@ -157,8 +157,11 @@ Messaging explicitly calls `thread/resume` without configuration overrides befor
 `turn/start`. It refuses a thread observed active or a resumed interactive approval
 policy. Concurrent external clients can still change a thread between those
 steps; the App Server remains authoritative. There is no automatic steering or
-interruption. Unsupported client-side tool/approval requests receive an explicit
-error; continue those tasks in Desktop.
+interruption. This NAS-local adaptation sends `toolOutput`, preserving tool
+authority instead of impersonating a user message. It disconnects after dispatch
+and leaves client-side tool/approval requests to Desktop without racing its reply.
+Keep Desktop attached for tasks requiring Desktop-owned tools. This bridge does
+not implement those tools or interactive approvals itself.
 
 ## Desktop compatibility
 
