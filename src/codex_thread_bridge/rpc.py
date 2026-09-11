@@ -69,20 +69,9 @@ class AppServer:
             async for raw in ws:
                 message = json.loads(raw)
                 if "method" in message:
-                    if "id" in message:
-                        # No silent approvals or fake results for client-side tools.
-                        await ws.send(
-                            json.dumps(
-                                {
-                                    "id": message["id"],
-                                    "error": {
-                                        "code": -32601,
-                                        "message": "Unsupported client action; "
-                                        "continue this task in Desktop",
-                                    },
-                                }
-                            )
-                        )
+                    # Desktop owns client-side tools and approvals. Any reply here,
+                    # including an error, can steal its shared request callback.
+                    # Without an owning client these actions remain unsupported.
                     # Reads and waits query the server; no unbounded event history.
                     continue
                 future = self._pending.get(message.get("id"))

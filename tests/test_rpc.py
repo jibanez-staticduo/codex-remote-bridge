@@ -22,6 +22,43 @@ async def test_rpc_multiplexes_interleaved_notifications(fake_server):
         await client.close()
 
 
+@pytest.mark.parametrize(
+    "client_action",
+    ["item/tool/call", "item/commandExecution/requestApproval", "item/tool/requestUserInput"],
+)
+async def test_client_actions_remain_owned_by_desktop(client_action):
+    replies = []
+
+    async def handler(ws):
+        async for raw in ws:
+            message = json.loads(raw)
+            method = message.get("method")
+            if method is None:
+                replies.append(message)
+            elif method == "initialize":
+                await ws.send(json.dumps({"id": message["id"], "result": {}}))
+            elif method == "thread/read":
+                # Server and client request IDs occupy independent namespaces.
+                await ws.send(
+                    json.dumps({"id": message["id"], "method": client_action, "params": {}})
+                )
+                await ws.send(json.dumps({"id": message["id"], "result": {"thread": {}}}))
+            elif method == "barrier":
+                # WebSocket ordering guarantees any stolen reply arrives before this request.
+                await ws.send(json.dumps({"id": message["id"], "result": {}}))
+
+    with tempfile.TemporaryDirectory(prefix="ctb-owner-") as directory:
+        path = Path(directory) / "app.sock"
+        async with unix_serve(handler, str(path)):
+            client = AppServer(path)
+            try:
+                assert await client.call("thread/read", {"threadId": "idle"}) == {"thread": {}}
+                await client.call("barrier", {})
+                assert replies == []
+            finally:
+                await client.close()
+
+
 async def test_rpc_preserves_api_error_and_reconnects_only_for_new_requests(fake_server):
     fake, path = fake_server
     client = AppServer(path)
