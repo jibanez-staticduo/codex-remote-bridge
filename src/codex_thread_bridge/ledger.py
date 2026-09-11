@@ -1,5 +1,7 @@
 """Durable request deduplication, including interrupted and partial operations."""
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -88,6 +90,63 @@ class Ledger:
 
     def close(self):
         self.db.close()
+
+    def list_threads(self, limit: int = 20, cursor: str | None = None):
+        """Historical creation receipts only; no native thread state or prompt content."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer between 1 and 100")
+        before = None
+        if cursor is not None:
+            try:
+                if not isinstance(cursor, str) or not cursor.startswith("bridge-v1:"):
+                    raise ValueError
+                raw = base64.b64decode(cursor[10:], altchars=b"-_", validate=True)
+                text = raw.decode("ascii")
+                if not text.isdecimal() or len(text) > 19:
+                    raise ValueError
+                before = int(text)
+                if before > 9223372036854775807:
+                    raise ValueError
+            except (ValueError, UnicodeError, binascii.Error) as error:
+                raise ValueError("Invalid bridge inventory cursor") from error
+        rows = self.db.execute(
+            """SELECT rowid, request_id,
+                      json_extract(receipt, '$.threadId'),
+                      json_extract(receipt, '$.operation'),
+                      json_extract(receipt, '$.status'),
+                      json_extract(receipt, '$.startedAt')
+               FROM operations
+               WHERE json_extract(receipt, '$.operation') IN
+                     ('create_thread', 'fork_thread', 'create_worktree_thread')
+                 AND json_type(receipt, '$.threadId') = 'text'
+                 AND json_extract(receipt, '$.threadId') <> ''
+                 AND (? IS NULL OR rowid < ?)
+               ORDER BY rowid DESC LIMIT ?""",
+            (before, before, limit + 1),
+        ).fetchall()
+        data = [
+            {
+                "requestId": request_id,
+                "threadId": thread_id,
+                "operation": operation,
+                "status": status,
+                "startedAt": started_at,
+            }
+            for _, request_id, thread_id, operation, status, started_at in rows[:limit]
+        ]
+        next_cursor = None
+        if len(rows) > limit:
+            next_cursor = "bridge-v1:" + base64.urlsafe_b64encode(
+                str(rows[limit - 1][0]).encode("ascii")
+            ).decode("ascii")
+        return {
+            "data": data,
+            "nextCursor": next_cursor,
+            "liveStateChecked": False,
+            "scope": "Historical creation receipts in this endpoint's local bridge ledger. "
+            "Status describes the creation operation, not current thread state; "
+            "existence and archived state are unchecked. Use read_thread for live data.",
+        }
 
     def import_legacy(self, path: Path):
         """Copy an old alias ledger without losing or silently resolving conflicting receipts."""

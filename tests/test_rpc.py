@@ -103,3 +103,10 @@ async def test_timeout_does_not_retry_request():
             finally:
                 stop.set()
                 await client.close()
+
+
+async def test_missing_control_socket_reports_prerequisite_without_spawning(tmp_path):
+    rpc = AppServer(tmp_path / "missing.sock", transport="proxy", codex_binary="not-a-command")
+    with pytest.raises(FileNotFoundError, match="codex app-server daemon start"):
+        await rpc.connect()
+    assert rpc._ws is None

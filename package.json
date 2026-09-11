@@ -1,0 +1,13 @@
+{
+  "name": "@staticduo/codex-remote-bridge",
+  "version": "0.2.0",
+  "description": "Local MCP tools for Codex app-server sessions used through remote clients",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/jibanez-staticduo/codex-remote-bridge.git" },
+  "bin": { "codex-remote-bridge": "bin/codex-remote-bridge.mjs" },
+  "engines": { "node": ">=18.19" },
+  "publishConfig": { "access": "public" },
+  "files": ["bin/*.mjs", "src/codex_thread_bridge/*.py", "pyproject.toml", "uv.lock", "README.md", "LICENSE", "docs/validation.md"],
+  "scripts": { "test": "node --test tests-node" }
+}

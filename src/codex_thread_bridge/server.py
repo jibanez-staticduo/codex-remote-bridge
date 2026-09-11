@@ -28,7 +28,7 @@ def make_server(bridge: Bridge):
             bridge.ledger.close()
 
     mcp = FastMCP(
-        "codex-thread-bridge",
+        "codex-remote-bridge",
         instructions=(
             "Create and message Codex sessions on this same host using its running App Server. "
             "Get user authorization before mutations. Use a stable request_id for each intended "
@@ -40,6 +40,8 @@ def make_server(bridge: Bridge):
         ),
         lifespan=lifespan,
     )
+    # FastMCP otherwise reports its SDK version as the application version.
+    mcp._mcp_server.version = __version__
 
     @mcp.tool(annotations=READ)
     async def get_capabilities() -> dict[str, Any]:
@@ -122,6 +124,57 @@ def make_server(bridge: Bridge):
         set Goals, or retry delivery. Use a stable request_id; inspect get_operation on uncertainty.
         """
         return await bridge.send_message_to_thread(request_id, thread_id, message)
+
+    @mcp.tool(annotations=READ)
+    async def list_bridge_threads(limit: int = 20, cursor: str = "") -> dict[str, Any]:
+        """List historical create/fork/worktree receipts in this bridge's local ledger.
+
+        Includes tool-output-only tasks that native lists may hide. Returns IDs and creation
+        operation status only, not current existence or archived state. Use read_thread for
+        live data. Separate pagination from list_threads; pass nextCursor unchanged.
+        """
+        return bridge.list_bridge_threads(limit, cursor or None)
+
+    @mcp.tool(annotations=READ)
+    async def list_archived_threads(
+        cwd: str | None = None, limit: int = 20, cursor: str = ""
+    ) -> dict[str, Any]:
+        """List archived threads without loading or unarchiving them."""
+        return await bridge.list_threads(cwd, limit, cursor or None, archived=True)
+
+    @mcp.tool(annotations=WRITE)
+    async def fork_thread(request_id: str, thread_id: str) -> dict[str, Any]:
+        """Fork a retained inactive thread in the same directory, preserving its settings.
+
+        Refuses any persistent Goal or unavailable Goal inspection. Requests deferred Goal
+        continuation as additional protection; starts no turn. Send a separate follow-up to
+        continue work. No worktree, permission overrides, or Desktop project binding is added.
+        Do not concurrently change the source Goal while forking.
+        """
+        return await bridge.fork_thread(request_id, thread_id)
+
+    @mcp.tool(annotations=WRITE)
+    async def set_thread_title(request_id: str, thread_id: str, title: str) -> dict[str, Any]:
+        """Rename the explicitly selected thread using the App Server's native operation."""
+        return await bridge.set_thread_title(request_id, thread_id, title)
+
+    @mcp.tool(annotations=WRITE)
+    async def set_thread_archived(
+        request_id: str,
+        thread_id: str,
+        archived: bool,
+        archive_spawned_descendants: bool = False,
+    ) -> dict[str, Any]:
+        """Archive or unarchive a thread. Refuses archiving an observed active root thread.
+
+        Native archive also stops and archives spawned descendants, so archiving requires
+        archive_spawned_descendants=true and authorization covering that subtree. A concurrent
+        activation after the check can still be stopped by the server. Unarchive affects only
+        the selected thread and does not resume its work.
+        """
+        return await bridge.set_thread_archived(
+            request_id, thread_id, archived, archive_spawned_descendants
+        )
 
     @mcp.tool(annotations=READ)
     async def list_threads(

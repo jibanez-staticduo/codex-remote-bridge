@@ -25,7 +25,7 @@ async def test_create_and_followup_preserve_defaults_and_exact_messages(
     assert sent["input"] == []
     assert sent["toolOutput"] == {
         "name": "send_message_to_thread",
-        "namespace": "codex_thread_bridge",
+        "namespace": "codex_remote_bridge",
         "output": "followup",
     }
     assert next(p for name, p in fake.calls if name == "thread/resume") == {

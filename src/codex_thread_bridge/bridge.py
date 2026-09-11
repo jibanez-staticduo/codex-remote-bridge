@@ -76,6 +76,9 @@ class Bridge:
             "capabilities": {
                 "createThread": True,
                 "sendMessage": True,
+                "forkThread": True,
+                "renameThread": True,
+                "archiveThread": True,
                 "listReadWait": True,
                 "goalRead": True,
                 "goalSet": False,
@@ -187,7 +190,12 @@ class Bridge:
                     "turn/start",
                     {
                         "threadId": thread_id,
-                        "input": [{"type": "text", "text": prompt}],
+                        "input": [],
+                        "toolOutput": {
+                            "name": "create_thread",
+                            "namespace": "codex_remote_bridge",
+                            "output": prompt,
+                        },
                     },
                 )
                 receipt["turnId"] = turn["turn"]["id"]
@@ -366,7 +374,12 @@ class Bridge:
                     "turn/start",
                     {
                         "threadId": receipt["threadId"],
-                        "input": [{"type": "text", "text": prompt}],
+                        "input": [],
+                        "toolOutput": {
+                            "name": "create_worktree_thread",
+                            "namespace": "codex_remote_bridge",
+                            "output": prompt,
+                        },
                     },
                 )
                 checkpoint(
@@ -421,7 +434,7 @@ class Bridge:
                     "input": [],
                     "toolOutput": {
                         "name": "send_message_to_thread",
-                        "namespace": "codex_thread_bridge",
+                        "namespace": "codex_remote_bridge",
                         "output": message,
                     },
                 },
@@ -437,14 +450,132 @@ class Bridge:
             action,
         )
 
+    async def fork_thread(self, request_id: str, thread_id: str):
+        nonempty(thread_id, "thread_id", 128)
+
+        async def action(receipt):
+            state = await self.rpc.call("thread/read", {"threadId": thread_id})
+            source = state["thread"]
+            if source.get("status", {}).get("type") == "active" or source.get("ephemeral"):
+                raise RpcError(
+                    "thread/fork",
+                    {
+                        "code": "unsupported_source",
+                        "message": "Fork requires a retained, inactive source thread.",
+                    },
+                )
+            # Older servers can ignore deferGoalContinuation. Refuse inherited goals
+            # instead of relying on that flag to prevent unexpected autonomous work.
+            try:
+                goal_state = await self.rpc.call("thread/goal/get", {"threadId": thread_id})
+            except RpcError as error:
+                raise RpcError(
+                    "thread/fork",
+                    {
+                        "code": "goal_inspection_failed",
+                        "message": "Cannot verify source Goal state; fork withheld. "
+                        "A working thread/goal/get API is required.",
+                    },
+                ) from error
+            if not isinstance(goal_state, dict) or "goal" not in goal_state:
+                raise RpcError(
+                    "thread/fork",
+                    {
+                        "code": "goal_inspection_failed",
+                        "message": "Source Goal response is unrecognized; fork withheld.",
+                    },
+                )
+            if goal_state["goal"] is not None:
+                raise RpcError(
+                    "thread/fork",
+                    {
+                        "code": "source_has_goal",
+                        "message": "Forking a thread with a persistent Goal is unsupported; "
+                        "fork withheld to avoid automatic continuation.",
+                    },
+                )
+            fork = await self.rpc.call(
+                "thread/fork",
+                {
+                    "threadId": thread_id,
+                    "excludeTurns": True,
+                    "deferGoalContinuation": True,
+                },
+            )
+            receipt.update(sourceThreadId=thread_id, threadId=fork["thread"]["id"], creation=fork)
+            self.ledger.save(receipt)
+            await self.rpc.close()
+
+        return await self._mutate(request_id, "fork_thread", {"threadId": thread_id}, action)
+
+    async def set_thread_title(self, request_id: str, thread_id: str, title: str):
+        nonempty(thread_id, "thread_id", 128)
+        nonempty(title, "title", 500)
+
+        async def action(receipt):
+            await self.rpc.call("thread/name/set", {"threadId": thread_id, "name": title})
+            receipt.update(threadId=thread_id, title=title)
+
+        return await self._mutate(
+            request_id, "set_thread_title", {"threadId": thread_id, "title": title}, action
+        )
+
+    async def set_thread_archived(
+        self,
+        request_id: str,
+        thread_id: str,
+        archived: bool,
+        archive_spawned_descendants: bool = False,
+    ):
+        nonempty(thread_id, "thread_id", 128)
+        if type(archived) is not bool or type(archive_spawned_descendants) is not bool:
+            raise ValueError("archive flags must be booleans")
+        if archived and not archive_spawned_descendants:
+            raise ValueError(
+                "Archiving also stops/archives spawned descendants; explicitly "
+                "acknowledge with archive_spawned_descendants=true"
+            )
+
+        async def action(receipt):
+            if archived:
+                state = await self.rpc.call("thread/read", {"threadId": thread_id})
+                if state["thread"].get("status", {}).get("type") == "active":
+                    raise RpcError(
+                        "thread/archive",
+                        {
+                            "code": "thread_busy",
+                            "message": "Refusing to archive an active thread.",
+                        },
+                    )
+            await self.rpc.call(
+                "thread/archive" if archived else "thread/unarchive", {"threadId": thread_id}
+            )
+            receipt.update(threadId=thread_id, archived=archived)
+
+        return await self._mutate(
+            request_id,
+            "set_thread_archived",
+            {
+                "threadId": thread_id,
+                "archived": archived,
+                "archiveSpawnedDescendants": archive_spawned_descendants,
+            },
+            action,
+        )
+
     async def get_goal(self, thread_id: str):
         nonempty(thread_id, "thread_id", 128)
         return clipped(await self.rpc.call("thread/goal/get", {"threadId": thread_id}), 4000)
 
-    async def list_threads(self, cwd=None, limit=20, cursor=None):
+    def list_bridge_threads(self, limit=20, cursor=None):
+        return self.ledger.list_threads(limit, cursor)
+
+    async def list_threads(self, cwd=None, limit=20, cursor=None, *, archived=False):
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         params = {"limit": limit, "useStateDbOnly": True}
+        if archived:
+            params["archived"] = True
         if cwd is not None:
             params["cwd"] = absolute_directory(cwd)
         if cursor is not None:
