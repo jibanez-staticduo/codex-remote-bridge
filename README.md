@@ -109,4 +109,11 @@ directories must be outside existing repositories; pytest accepts `--basetemp`.
 The [source](src/codex_thread_bridge) and [tests](tests) define the detailed
 behavior. Contribution requirements are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## References
+
+- [Codex App Server API documentation](https://learn.chatgpt.com/docs/app-server)
+- [RPC method definitions](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs)
+- [Request, response, and notification types](https://github.com/openai/codex/tree/main/codex-rs/app-server-protocol/src/protocol/v2)
+- [App Server implementation](https://github.com/openai/codex/tree/main/codex-rs/app-server/src)
+
 MIT licensed. Independent project, not affiliated with or endorsed by OpenAI.
