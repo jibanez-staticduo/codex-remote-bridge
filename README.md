@@ -160,6 +160,12 @@ conflict. Use `get_operation` with the original request ID to inspect it; do not
 create a new ID to retry delivery. New receipts use strict supplied-argument
 matching and do not apply this legacy fallback.
 
+Creation request fingerprints now always include `approvals_reviewer`, even with
+approval policy `never`. Older receipts still replay using their original rules;
+those that omitted the reviewer cannot distinguish its original value. Treat
+their replay as historical evidence, not confirmation of a changed reviewer.
+New receipts reject reviewer changes made with the same request ID.
+
 Reading, listing, waiting, and Goal inspection never resume or modify a thread.
 Messaging explicitly calls `thread/resume` without configuration overrides before `turn/start`. It refuses an active thread or a client-side approval policy; `on-request` with App Server Auto-review is supported. Concurrent external clients can still change a thread between those steps; the App Server remains authoritative. Active-turn steering calls `turn/steer` with an explicit turn ID and does not resume, interrupt, or override model, effort, cwd, or permissions. Unsupported client-side tool/approval requests receive an explicit error; continue those tasks in Desktop.
 
@@ -273,6 +279,9 @@ Independent project, not affiliated with or endorsed by OpenAI. MIT licensed.
 `update_thread_permissions` applies one user-authorized, complete `sandbox_policy` through `thread/settings/update`. Supply the exact current `expected_identity` fields (`thread_id`, `cwd`, `model`, `reasoning_effort`), plus `approval_policy` and `approvals_reviewer`. The task must be idle. The bridge records before/after settings, verifies permissions and identity/workspace-root preservation, and never starts a turn as part of an update. A concurrent external client can race the final idle check; coordinate task ownership while updating. There is no atomic App Server idle compare-and-set.
 
 Existing-directory `create_thread` accepts `sandbox_policy` with its matching `sandbox` kind and verifies the complete effective policy before the initial prompt. Defaults remain read-only and approval `never`. Explicit `on-request` requires `approvals_reviewer="auto_review"`, so the App Server owns escalation review. Optional `model` and `reasoning_effort` select the creation profile; explicit values are checked against the returned settings before any initial prompt is sent. A mismatch retains the task ID in the failed receipt without dispatching work. Omitted fields preserve configured defaults. Messaging carries no settings overrides and accepts `never` or `on-request` with Auto-review; human/client-side approvals remain unsupported and are never silently approved. This does not promise approval of every requested action.
+
+Network-enabled read-only policies are supported by `update_thread_permissions`,
+but are currently rejected by `create_thread` before creating a task.
 
 Updates require a stable `request_id`, including failures. A replay returns the original receipt without dispatching again or continuing a partial operation. On unknown outcomes inspect `get_operation` and effective task settings before deciding on a separately authorized action. Profile changes are task-scoped; no global permissions or other tasks are modified. Existing bridge processes must reload the MCP to expose the new schema; an already-running model turn is not interrupted by editing the installed files.
 

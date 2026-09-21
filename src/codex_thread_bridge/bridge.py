@@ -21,6 +21,11 @@ def absolute_directory(cwd: str):
 
 
 DISPLAY_FIELDS = frozenset({"text", "preview", "summary", "objective", "aggregatedOutput"})
+SANDBOX_POLICY_TYPES = {
+    "read-only": "readOnly",
+    "workspace-write": "workspaceWrite",
+    "danger-full-access": "dangerFullAccess",
+}
 
 
 def validate_sandbox_policy(policy: dict):
@@ -161,16 +166,12 @@ class Bridge:
             nonempty(reasoning_effort, "reasoning_effort", 128)
         if sandbox_policy is not None:
             validate_sandbox_policy(sandbox_policy)
-            if sandbox_policy["type"] != {
-                "read-only": "readOnly",
-                "workspace-write": "workspaceWrite",
-                "danger-full-access": "dangerFullAccess",
-            }.get(sandbox):
+            if sandbox_policy["type"] != SANDBOX_POLICY_TYPES.get(sandbox):
                 raise ValueError("sandbox and sandbox_policy.type must agree")
         nonempty(cwd, "cwd")
         if not Path(cwd).is_absolute():
             raise ValueError("cwd must be an existing absolute directory on the App Server host")
-        if sandbox not in {"read-only", "workspace-write", "danger-full-access"}:
+        if sandbox not in SANDBOX_POLICY_TYPES:
             raise ValueError("Unsupported sandbox")
         for name, value in [("prompt", prompt), ("title", title), ("model", model)]:
             if value is not None:
@@ -206,15 +207,19 @@ class Bridge:
             params["config"] = config_overrides
         launch_params = dict(params)
         request_params = {**params, "prompt": prompt, "title": title}
-        # Preserve retained fingerprints for calls using the original defaults.
         if sandbox_policy is not None:
-            request_params.update(
-                sandbox_policy=sandbox_policy, approvals_reviewer=approvals_reviewer
-            )
+            request_params["sandbox_policy"] = sandbox_policy
+        request_params["approvals_reviewer"] = approvals_reviewer
 
-        def legacy_params():
-            # Old receipts hashed a resolved cwd; only legacy lookups may use this form.
-            return {**request_params, "cwd": str(Path(cwd).resolve())}
+        def legacy_params(version):
+            previous = dict(request_params)
+            if sandbox_policy is None:
+                previous.pop("approvals_reviewer")
+            yield previous
+            # Try the original spelling before resolving a possibly changed path.
+            # Only version 1 also accepted resolved cwd; version 2 used the supplied path.
+            if version == 1:
+                yield {**previous, "cwd": str(Path(cwd).resolve())}
 
         def validate_fresh():
             # The fingerprint uses the supplied path, not mutable symlink resolution.
@@ -230,11 +235,7 @@ class Bridge:
             receipt.update(threadId=thread_id, creation=created)
             self.ledger.save(receipt)  # Retain the ID even if naming or the first turn fails.
             actual = created.get("sandbox", {}).get("type")
-            expected = {
-                "read-only": "readOnly",
-                "workspace-write": "workspaceWrite",
-                "danger-full-access": "dangerFullAccess",
-            }[sandbox]
+            expected = SANDBOX_POLICY_TYPES[sandbox]
             if (
                 created.get("cwd") != launch_params["cwd"]
                 or created.get("approvalPolicy") != approval_policy
@@ -310,14 +311,9 @@ class Bridge:
         if worktree_mode != "bridge-managed-retained":
             raise ValueError("Explicit bridge-managed-retained worktree ownership is required")
         validate_sandbox_policy(expected_sandbox_policy)
-        sandbox_types = {
-            "read-only": "readOnly",
-            "workspace-write": "workspaceWrite",
-            "danger-full-access": "dangerFullAccess",
-        }
         if (
-            sandbox not in sandbox_types
-            or expected_sandbox_policy.get("type") != sandbox_types[sandbox]
+            sandbox not in SANDBOX_POLICY_TYPES
+            or expected_sandbox_policy.get("type") != SANDBOX_POLICY_TYPES[sandbox]
         ):
             raise ValueError("sandbox and expected_sandbox_policy.type must agree")
         for name, value in [

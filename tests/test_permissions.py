@@ -16,6 +16,28 @@ async def setup(bridge, tmp_path):
     return created["threadId"], identity(created["creation"])
 
 
+@pytest.mark.parametrize(
+    "reviewer, changed_reviewer", [("user", "auto_review"), ("auto_review", "user")]
+)
+async def test_creation_replay_rejects_changed_reviewer_with_default_permissions(
+    bridge, fake_server, tmp_path, reviewer, changed_reviewer
+):
+    original = await bridge.create_thread(
+        "reviewer", str(tmp_path), prompt="hello", approvals_reviewer=reviewer
+    )
+    assert original["status"] == "accepted"
+    replay = await bridge.create_thread(
+        "reviewer", str(tmp_path), prompt="hello", approvals_reviewer=reviewer
+    )
+    assert replay == {**original, "replayed": True}
+    with pytest.raises(ValueError, match="different arguments"):
+        await bridge.create_thread(
+            "reviewer", str(tmp_path), prompt="hello", approvals_reviewer=changed_reviewer
+        )
+    fake, _ = fake_server
+    assert fake.count("thread/start") == 1 and fake.count("turn/start") == 1
+
+
 async def test_update_preserves_identity_and_messages_have_no_overrides(
     bridge, fake_server, tmp_path
 ):

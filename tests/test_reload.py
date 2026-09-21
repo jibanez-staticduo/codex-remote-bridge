@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from codex_thread_bridge import reload as reload_command
@@ -17,6 +19,20 @@ async def test_reload_response_loss_is_not_retried(fake_server):
     fake.drop_after = "config/mcpServer/reload"
     with pytest.raises(TransportError):
         await reload_command.request_reload(socket)
+    assert fake.count("config/mcpServer/reload") == 1
+
+
+async def test_cancelled_reload_does_not_resend_after_dispatch(fake_server):
+    fake, socket = fake_server
+    fake.pause_after = "config/mcpServer/reload"
+    task = asyncio.create_task(reload_command.request_reload(socket))
+    try:
+        await asyncio.wait_for(fake.paused.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        fake.release.set()
     assert fake.count("config/mcpServer/reload") == 1
 
 
