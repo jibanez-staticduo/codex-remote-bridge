@@ -40,10 +40,14 @@ class Ledger:
             return None
         receipt = json.loads(row[1])
         if row[0] != fingerprint:
+            version = receipt.get("fingerprintVersion", 1)
             legacy_match = (
-                receipt.get("fingerprintVersion", 1) == 1
+                version in {1, 2}
                 and legacy_params is not None
-                and row[0] == self._fingerprint(request_id, method, legacy_params())
+                and any(
+                    row[0] == self._fingerprint(request_id, method, previous)
+                    for previous in legacy_params(version)
+                )
             )
             if not legacy_match:
                 raise ValueError(
@@ -59,7 +63,7 @@ class Ledger:
             "status": "in_progress_or_unknown",
             "startedAt": time.time(),
             "retrySafe": False,
-            "fingerprintVersion": 2,
+            "fingerprintVersion": 3,
         }
         with self.db:
             inserted = self.db.execute(

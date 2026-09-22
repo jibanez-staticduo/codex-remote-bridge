@@ -92,11 +92,13 @@ async def test_cwd_symlink_retargeting_does_not_change_request_identity(
     assert fake.count("thread/start") == 1
 
 
-async def test_old_canonical_cwd_fingerprint_still_replays_without_directory(
-    bridge, fake_server, tmp_path
+@pytest.mark.parametrize("cwd_state", ["missing", "symlink", "symlink_loop"])
+async def test_old_canonical_cwd_fingerprint_replays_after_path_changes(
+    bridge, fake_server, tmp_path, cwd_state
 ):
     fake, _ = fake_server
-    cwd = str(tmp_path / "removed-before-upgrade")
+    checkout = tmp_path / "removed-before-upgrade"
+    cwd = str(checkout)
     # Version 0.1.0 used this resolved-cwd payload, with no schema version field.
     _, receipt = bridge.ledger.begin(
         "old-create",
@@ -110,7 +112,14 @@ async def test_old_canonical_cwd_fingerprint_still_replays_without_directory(
             "title": None,
         },
     )
+    receipt.pop("fingerprintVersion")
     bridge.ledger.save({**receipt, "status": "accepted", "threadId": "retained-thread"})
+    if cwd_state == "symlink":
+        replacement = tmp_path / "other-checkout"
+        replacement.mkdir()
+        checkout.symlink_to(replacement, target_is_directory=True)
+    elif cwd_state == "symlink_loop":
+        checkout.symlink_to(checkout, target_is_directory=True)
     repeated = await bridge.create_thread("old-create", cwd)
     assert repeated["replayed"] and repeated["threadId"] == "retained-thread"
     assert not fake.calls
@@ -148,6 +157,39 @@ async def test_legacy_cwd_symlink_replay_uses_old_fingerprint_only_for_legacy_re
     with pytest.raises(ValueError, match="different arguments"):
         await bridge.create_thread("new", str(alias))
     assert fake.count("thread/start") == 1
+
+
+@pytest.mark.parametrize("reviewer", ["user", "auto_review"])
+@pytest.mark.parametrize("status", ["accepted", "outcome_unknown"])
+async def test_previous_creation_receipts_replay_after_upgrade_with_missing_cwd(
+    bridge, fake_server, tmp_path, reviewer, status
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    _, receipt = bridge.ledger.begin(
+        "previous-create",
+        "create_thread",
+        {
+            "cwd": str(alias),
+            "sandbox": "read-only",
+            "approvalPolicy": "never",
+            "ephemeral": False,
+            "prompt": None,
+            "title": None,
+        },
+    )
+    original = bridge.ledger.save({**receipt, "fingerprintVersion": 2, "status": status})
+    # Version 2 hashed the supplied path and could omit the requested reviewer.
+    alias.unlink()
+    replay = await bridge.create_thread("previous-create", str(alias), approvals_reviewer=reviewer)
+    assert replay == {**original, "replayed": True}
+    with pytest.raises(ValueError, match="different arguments"):
+        await bridge.create_thread("previous-create", str(target), approvals_reviewer=reviewer)
+    with pytest.raises(ValueError, match="different arguments"):
+        await bridge.create_thread("previous-create", str(alias), prompt="changed")
+    assert not fake_server[0].calls
 
 
 async def test_lost_creation_response_is_never_retried(bridge, fake_server, tmp_path):
@@ -204,6 +246,76 @@ async def test_busy_thread_is_not_resumed_or_messaged(bridge, fake_server, tmp_p
     result = await bridge.send_message_to_thread("busy", created["threadId"], "hello")
     assert result["status"] == "failed"
     assert fake.count("thread/resume") == 0 and fake.count("turn/start") == 0
+
+
+async def test_steer_exact_active_turn_once_without_resuming(bridge, fake_server, tmp_path):
+    fake, _ = fake_server
+    created = await bridge.create_thread("create", str(tmp_path), prompt="initial")
+    tid = created["threadId"]
+    turn_id = created["turnId"]
+    fake.threads[tid]["status"] = {"type": "active"}
+    fake.threads[tid]["turns"][-1]["status"] = "inProgress"
+
+    sent = await bridge.steer_thread("steer", tid, turn_id, "change direction")
+    replayed = await bridge.steer_thread("steer", tid, turn_id, "change direction")
+    assert sent["status"] == "accepted" and sent["turnId"] == turn_id
+    assert replayed["replayed"] and fake.count("turn/steer") == 1
+    assert fake.count("thread/resume") == 0 and fake.count("turn/start") == 1
+    assert fake.threads[tid]["turns"][-1]["items"][-1]["text"] == "change direction"
+
+
+async def test_steer_rejects_stale_or_idle_turn_without_delivery(bridge, fake_server, tmp_path):
+    fake, _ = fake_server
+    created = await bridge.create_thread("create", str(tmp_path), prompt="initial")
+    tid = created["threadId"]
+    fake.threads[tid]["status"] = {"type": "active"}
+    fake.threads[tid]["turns"][-1]["status"] = "inProgress"
+
+    stale = await bridge.steer_thread("stale", tid, "wrong-turn", "do not deliver")
+    assert stale["status"] == "failed"
+    assert fake.threads[tid]["turns"][-1]["items"] == [{"type": "agentMessage", "text": "initial"}]
+    fake.threads[tid]["status"] = {"type": "idle"}
+    idle = await bridge.steer_thread("idle", tid, created["turnId"], "also do not deliver")
+    assert idle["status"] == "failed" and fake.count("turn/steer") == 2
+
+
+@pytest.mark.parametrize("interruption", ["response_loss", "cancellation"])
+async def test_interrupted_steering_retains_unknown_receipt_without_redelivery(
+    bridge, fake_server, tmp_path, interruption
+):
+    fake, _ = fake_server
+    fake.complete_turns = False
+    created = await bridge.create_thread("create", str(tmp_path), prompt="initial")
+    tid, turn_id = created["threadId"], created["turnId"]
+    fake.threads[tid]["status"] = {"type": "active"}
+    if interruption == "response_loss":
+        fake.drop_after = "turn/steer"
+        result = await bridge.steer_thread("steer", tid, turn_id, "change direction")
+        assert result["status"] == "outcome_unknown"
+        fake.drop_after = None
+    else:
+        fake.pause_after = "turn/steer"
+        task = asyncio.create_task(bridge.steer_thread("steer", tid, turn_id, "change direction"))
+        try:
+            await asyncio.wait_for(fake.paused.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            fake.release.set()
+
+    replay = await bridge.steer_thread("steer", tid, turn_id, "change direction")
+    assert replay["replayed"] and replay["status"] == "outcome_unknown"
+    assert replay["threadId"] == tid and replay["expectedTurnId"] == turn_id
+    assert replay["retrySafe"] is False
+    with pytest.raises(ValueError, match="different arguments"):
+        await bridge.steer_thread("steer", tid, turn_id, "different instruction")
+    history = await bridge.read_thread(tid)
+    assert history["turnsPage"]["data"][0]["items"] == [
+        {"type": "agentMessage", "text": "initial"},
+        {"type": "userMessage", "text": "change direction"},
+    ]
+    assert fake.count("turn/steer") == 1
 
 
 async def test_interactive_approval_policy_withholds_message(bridge, fake_server, tmp_path):
