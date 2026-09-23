@@ -20,6 +20,7 @@ class FakeServer:
         self.override_creation = {}
         self.approval_policy = "never"
         self.complete_turns = True
+        self.active_race = False
         self.goal = None
         self.handshake_extensions = []
         self.cursor_padding = 160
@@ -87,21 +88,40 @@ class FakeServer:
                 result = {}
             elif method == "turn/start":
                 thread = self.threads[params["threadId"]]
-                turn = {
-                    "id": f"turn-{len(thread['turns']) + 1}",
-                    "status": "completed" if self.complete_turns else "inProgress",
-                    "items": [
+                if self.active_race and thread["status"].get("type") == "active":
+                    # Simulate the observed active status ending before dispatch.
+                    thread["status"] = {"type": "idle"}
+                if thread["status"].get("type") == "active" and thread["turns"]:
+                    # Codex queues tool output on the existing in-flight turn.
+                    turn = thread["turns"][-1]
+                    turn["items"].append(
                         {
-                            "type": "agentMessage",
-                            "text": (
-                                params["toolOutput"]["output"]
-                                if "toolOutput" in params
-                                else params["input"][0]["text"]
-                            ),
+                            "type": "functionCallOutput",
+                            "name": params["toolOutput"]["name"],
+                            "namespace": params["toolOutput"].get("namespace"),
+                            "output": params["toolOutput"]["output"],
                         }
-                    ],
-                }
-                thread["turns"].append(turn)
+                    )
+                else:
+                    turn = {
+                        "id": f"turn-{len(thread['turns']) + 1}",
+                        "status": "completed" if self.complete_turns else "inProgress",
+                        "items": [
+                            {
+                                "type": "agentMessage",
+                                "text": (
+                                    params["toolOutput"]["output"]
+                                    if "toolOutput" in params
+                                    else params["input"][0]["text"]
+                                ),
+                            }
+                        ],
+                    }
+                    thread["turns"].append(turn)
+                if turn["status"] == "inProgress":
+                    thread["status"] = {"type": "active", "activeFlags": []}
+                else:
+                    thread["status"] = {"type": "idle"}
                 result = {"turn": turn}
             elif method == "thread/read":
                 thread = dict(self.threads[params["threadId"]])

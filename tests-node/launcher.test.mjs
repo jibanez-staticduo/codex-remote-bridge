@@ -27,7 +27,7 @@ function mocked(overrides = {}) {
 test('version requires no network or Python bootstrap', () => {
   const result = spawnSync(process.execPath, ['bin/codex-remote-bridge.mjs', '--version'], { encoding: 'utf8' });
   assert.equal(result.status, 0);
-  assert.equal(result.stdout, '0.2.0\n');
+  assert.equal(result.stdout, '0.3.0\n');
   assert.equal(result.stderr, '');
 });
 
@@ -97,7 +97,7 @@ test('platform cache roots follow supported OS conventions', () => {
   await symlink(resolve('bin/codex-remote-bridge.mjs'), link);
   const result = spawnSync(process.execPath, [link, '--version'], { encoding: 'utf8' });
   assert.equal(result.status, 0);
-  assert.equal(result.stdout, '0.2.0\n');
+  assert.equal(result.stdout, '0.3.0\n');
  });
 
 

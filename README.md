@@ -31,7 +31,7 @@ uv release and the included `uv.lock`. No global Python installation is required
 Initial setup needs internet access; setup diagnostics go to stderr, not MCP stdout.
 
 ```sh
-npx --yes @staticduo/codex-remote-bridge@0.2.0 --help
+npx --yes @staticduo/codex-remote-bridge@0.3.0 --help
 ```
 
 Add to Codex configuration **on the host running the task**:
@@ -39,7 +39,7 @@ Add to Codex configuration **on the host running the task**:
 ```toml
 [mcp_servers.codex_remote_bridge]
 command = "npx"
-args = ["--yes", "@staticduo/codex-remote-bridge@0.2.0"]
+args = ["--yes", "@staticduo/codex-remote-bridge@0.3.0"]
 startup_timeout_sec = 180
 tool_timeout_sec = 60
 ```
@@ -73,7 +73,7 @@ validation alone does not establish mobile compatibility.
 | `get_capabilities` | Report connection and compatibility limits |
 | `create_thread` | Create a retained task in an existing directory, optionally name it and send its first instruction |
 | `fork_thread` | Copy history into a retained task without starting a turn |
-| `send_message_to_thread` | Send one instruction to an explicitly selected idle task |
+| `send_message_to_thread` | Send one instruction to an explicitly selected active or idle task |
 | `set_thread_title` | Rename a task |
 | `set_thread_archived` | Archive/unarchive; archiving requires acknowledgement of descendant effects |
 | `list_threads` | List unarchived tasks with pagination |
@@ -100,6 +100,9 @@ tools are unaffected. No arbitrary RPC or general shell tool is exposed.
 - **Tool provenance:** delivered instructions use `turn/start.toolOutput`, not
   user-authored messages. This preserves tool provenance but does not authenticate
   the identity of the sending agent.
+- **Active-turn delivery:** an observed active task receives native tool output
+  without a resume. Idle tasks are resumed before dispatch, without settings
+  overrides.
 - **Desktop coexistence:** unsolicited server requests are left to their owning
   client. Even an error response could consume Desktop's pending approval/tool
   callback, so the bridge does not answer those requests.
@@ -111,10 +114,15 @@ Each mutation requires a stable `request_id`. Reusing it with the same arguments
 returns its stored receipt without redispatching. Different arguments fail. Use
 new IDs for new intended operations, never to retry an uncertain operation.
 
-`accepted` means the API steps returned, not that a model turn finished. A
-`failed` receipt can include partial effects. `outcome_unknown` and
-`in_progress_or_unknown` require reconciliation. Inspect retained IDs/artifacts;
-this is conservative deduplication, not an exactly-once guarantee.
+`accepted` means the API steps returned, not that a model turn finished. A send
+receipt's `deliveryMode` records the status branch observed before dispatch:
+`active_tool_output` or `idle_tool_output`. That status check and dispatch are not
+atomic; if an observed active turn finishes first, Codex can start a new turn.
+Use `actualTurnId` as the authoritative turn ID returned by Codex. A `failed`
+receipt can include partial effects. `outcome_unknown` and
+`in_progress_or_unknown` require reconciliation. Reuse the same request ID to
+inspect its retained receipt; never retry an uncertain send under a new ID. This
+is conservative deduplication, not an exactly-once guarantee.
 
 Receipts can contain private metadata. They stay in the local endpoint-scoped
 SQLite ledger, not npm/GitHub. Preserve the default
@@ -124,9 +132,10 @@ retained for continuity. Do not run old/new versions against one ledger during
 an upgrade.
 
 Creation defaults to read-only and approval policy `never`; broader permissions
-must be explicit. Messaging resumes without model/reasoning/directory/permission
-overrides and refuses interactive approval policies. The bridge does not handle
-approval prompts. Keep the owning client attached for client-owned tools.
+must be explicit. Messaging sends tool output without model/reasoning/directory/
+permission overrides. The active branch does not resume; the idle branch resumes
+and refuses interactive approval policies. The bridge does not handle approval
+prompts. Keep the owning client attached for client-owned tools.
 Forking refuses sources with any goal (or unavailable goal inspection), sends no
 initial instruction, and also requests deferred goal continuation. Concurrent
 changes by other clients remain the app-server's responsibility.
@@ -152,17 +161,17 @@ caller owns retained artifacts and must reconcile partial failures.
 
 Not implemented in this release:
 
-- Active-turn messaging, automatic steering, interruption, or background queues.
+- Automatic steering, interruption, or background queues.
 - Desktop's `handoff_thread` lifecycle and `automation_update` scheduler.
 - Sidebar organization, sharing, voice, or UI panels.
 - Desktop-managed worktree lifecycle or guaranteed sidebar/project registration.
 - Cross-host routing, interactive approvals, or credential management.
 
-Future candidates are active-turn delivery preserving tool provenance, bounded
-queued delivery with receipts, authenticated sender context, and explicit
-cross-host routing. Each needs protocol/client validation. Handoff and
-scheduling will only be added if an appropriate API preserves their semantics.
-These are roadmap items, not functions available in the current release.
+Future candidates include bounded queued delivery with receipts, authenticated
+sender context, and explicit cross-host routing. Each needs protocol/client
+validation. Handoff and scheduling will only be added if an appropriate API
+preserves their semantics. These are roadmap items, not functions available in
+the current release.
 
 ## Development
 

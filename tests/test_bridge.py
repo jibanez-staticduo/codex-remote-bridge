@@ -20,7 +20,12 @@ async def test_create_and_followup_preserve_defaults_and_exact_messages(
     assert not any(name.startswith("thread/goal/") for name, _ in fake.calls)
     assert fake.threads[first["threadId"]]["turns"][0]["items"][0]["text"] == "  exact\nmessage  "
     followup = await bridge.send_message_to_thread("send", first["threadId"], "followup")
-    assert followup["status"] == "accepted" and followup["turnId"] == "turn-2"
+    assert (
+        followup["status"] == "accepted"
+        and followup["turnId"] == "turn-2"
+        and followup["actualTurnId"] == "turn-2"
+        and followup["deliveryMode"] == "idle_tool_output"
+    )
     sent = [params for name, params in fake.calls if name == "turn/start"][-1]
     assert sent["input"] == []
     assert sent["toolOutput"] == {
@@ -34,6 +39,86 @@ async def test_create_and_followup_preserve_defaults_and_exact_messages(
     }
     result = await bridge.wait_thread(first["threadId"], followup["turnId"], 0)
     assert result["turn"]["items"][0]["text"] == "followup"
+
+
+async def test_active_message_uses_tool_output_on_existing_turn(bridge, fake_server, tmp_path):
+    fake, _ = fake_server
+    fake.complete_turns = False
+    created = await bridge.create_thread("active-create", str(tmp_path), prompt="initial")
+
+    result = await bridge.send_message_to_thread("active-send", created["threadId"], "followup")
+
+    assert result["status"] == "accepted"
+    assert result["deliveryMode"] == "active_tool_output"
+    assert result["actualTurnId"] == result["turnId"] == "turn-1"
+    assert fake.count("thread/resume") == 0
+    sent = [params for name, params in fake.calls if name == "turn/start"][-1]
+    assert sent["input"] == []
+    assert sent["toolOutput"] == {
+        "name": "send_message_to_thread",
+        "namespace": "codex_remote_bridge",
+        "output": "followup",
+    }
+    assert fake.threads[created["threadId"]]["turns"][0]["items"][-1] == {
+        "type": "functionCallOutput",
+        "name": "send_message_to_thread",
+        "namespace": "codex_remote_bridge",
+        "output": "followup",
+    }
+
+
+async def test_duplicate_active_message_is_dispatched_once(bridge, fake_server, tmp_path):
+    fake, _ = fake_server
+    fake.complete_turns = False
+    created = await bridge.create_thread("active-create", str(tmp_path), prompt="initial")
+
+    results = await asyncio.gather(
+        *[
+            bridge.send_message_to_thread("active-send", created["threadId"], "followup")
+            for _ in range(3)
+        ]
+    )
+
+    assert sum(result["status"] == "accepted" for result in results) == 3
+    assert sum(result.get("replayed", False) for result in results) == 2
+    assert fake.count("thread/resume") == 0
+    assert fake.count("turn/start") == 2
+
+
+async def test_active_message_transport_failure_is_replayed_without_resend(
+    bridge, fake_server, tmp_path
+):
+    fake, _ = fake_server
+    fake.complete_turns = False
+    created = await bridge.create_thread("active-create", str(tmp_path), prompt="initial")
+    fake.drop_after = "turn/start"
+
+    result = await bridge.send_message_to_thread("active-send", created["threadId"], "followup")
+
+    assert result["status"] == "outcome_unknown"
+    assert result["deliveryMode"] == "active_tool_output"
+    assert "actualTurnId" not in result
+    fake.drop_after = None
+    repeated = await bridge.send_message_to_thread("active-send", created["threadId"], "followup")
+    assert repeated["replayed"] and repeated["status"] == "outcome_unknown"
+    assert fake.count("turn/start") == 2
+    assert fake.threads[created["threadId"]]["turns"][0]["items"][-1]["type"] == (
+        "functionCallOutput"
+    )
+
+
+async def test_active_status_race_reports_actual_tool_output_turn(bridge, fake_server, tmp_path):
+    fake, _ = fake_server
+    created = await bridge.create_thread("create", str(tmp_path), prompt="initial")
+    fake.threads[created["threadId"]]["status"] = {"type": "active", "activeFlags": []}
+    fake.active_race = True
+
+    result = await bridge.send_message_to_thread("race-send", created["threadId"], "followup")
+
+    assert result["status"] == "accepted"
+    assert result["deliveryMode"] == "active_tool_output"
+    assert result["actualTurnId"] == "turn-2"
+    assert fake.count("thread/resume") == 0
 
 
 async def test_empty_creation_does_not_dispatch_or_set_goal(bridge, fake_server, tmp_path):
@@ -204,13 +289,14 @@ async def test_desktop_project_id_not_found_stops_before_creation(bridge, fake_s
     assert result["status"] == "failed" and fake.count("thread/start") == 0
 
 
-async def test_busy_thread_is_not_resumed_or_messaged(bridge, fake_server, tmp_path):
+async def test_active_thread_is_messaged_without_resume(bridge, fake_server, tmp_path):
     fake, _ = fake_server
     created = await bridge.create_thread("create", str(tmp_path))
-    fake.threads[created["threadId"]]["status"] = {"type": "active"}
+    fake.threads[created["threadId"]]["status"] = {"type": "active", "activeFlags": []}
     result = await bridge.send_message_to_thread("busy", created["threadId"], "hello")
-    assert result["status"] == "failed"
-    assert fake.count("thread/resume") == 0 and fake.count("turn/start") == 0
+    assert result["status"] == "accepted"
+    assert result["deliveryMode"] == "active_tool_output"
+    assert fake.count("thread/resume") == 0 and fake.count("turn/start") == 1
 
 
 async def test_interactive_approval_policy_withholds_message(bridge, fake_server, tmp_path):

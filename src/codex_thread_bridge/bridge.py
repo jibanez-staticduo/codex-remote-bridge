@@ -76,6 +76,7 @@ class Bridge:
             "capabilities": {
                 "createThread": True,
                 "sendMessage": True,
+                "activeTurnToolOutput": True,
                 "forkThread": True,
                 "renameThread": True,
                 "archiveThread": True,
@@ -399,16 +400,29 @@ class Bridge:
             receipt["threadId"] = thread_id
             self.ledger.save(receipt)
             state = await self.rpc.call("thread/read", {"threadId": thread_id})
+            tool_output = {
+                "name": "send_message_to_thread",
+                "namespace": "codex_remote_bridge",
+                "output": message,
+            }
             if state["thread"].get("status", {}).get("type") == "active":
-                raise RpcError(
-                    "thread/read",
-                    {
-                        "code": "thread_busy",
-                        "message": "Thread is active; message withheld. Wait for completion.",
-                    },
+                # Current Codex app-server queues turn/start.toolOutput on the active
+                # turn and returns that turn's ID. Do not resume or send user input.
+                receipt["deliveryMode"] = "active_tool_output"
+                self.ledger.save(receipt)
+                turn = await self.rpc.call(
+                    "turn/start",
+                    {"threadId": thread_id, "input": [], "toolOutput": tool_output},
                 )
+                actual_turn_id = turn["turn"]["id"]
+                receipt.update(turnId=actual_turn_id, actualTurnId=actual_turn_id)
+                self.ledger.save(receipt)
+                await self.rpc.close()
+                return
             # Resume is an explicit part of messaging, never part of discovery.
             # No cwd, model, sandbox, or reasoning overrides are supplied.
+            receipt["deliveryMode"] = "idle_tool_output"
+            self.ledger.save(receipt)
             resumed = await self.rpc.call(
                 "thread/resume",
                 {
@@ -432,14 +446,11 @@ class Bridge:
                 {
                     "threadId": thread_id,
                     "input": [],
-                    "toolOutput": {
-                        "name": "send_message_to_thread",
-                        "namespace": "codex_remote_bridge",
-                        "output": message,
-                    },
+                    "toolOutput": tool_output,
                 },
             )
-            receipt["turnId"] = turn["turn"]["id"]
+            actual_turn_id = turn["turn"]["id"]
+            receipt.update(turnId=actual_turn_id, actualTurnId=actual_turn_id)
             # The bridge must not remain a competing Desktop client subscriber.
             await self.rpc.close()
 

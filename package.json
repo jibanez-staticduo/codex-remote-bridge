@@ -1,6 +1,6 @@
 {
   "name": "@staticduo/codex-remote-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local MCP tools for Codex app-server sessions used through remote clients",
   "type": "module",
   "license": "MIT",
