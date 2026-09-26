@@ -287,7 +287,6 @@ class Bridge:
                     },
                 )
                 receipt["turnId"] = turn["turn"]["id"]
-                await self.rpc.close()
             receipt["desktopProjectAssociation"] = "unverified; check Desktop listing"
 
         return await self._mutate(
@@ -471,7 +470,6 @@ class Bridge:
                     turnId=turn["turn"]["id"],
                     initialPrompt={"state": "accepted"},
                 )
-                await self.rpc.close()
             checkpoint("complete", recoveryRequired=False)
 
         return await self._mutate(request_id, "create_worktree_thread", params, action)
@@ -647,8 +645,6 @@ class Bridge:
                 },
             )
             receipt["turnId"] = turn["turn"]["id"]
-            # The bridge must not remain a competing Desktop client subscriber.
-            await self.rpc.close()
 
         return await self._mutate(
             request_id,

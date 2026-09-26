@@ -69,9 +69,10 @@ class AppServer:
             async for raw in ws:
                 message = json.loads(raw)
                 if "method" in message:
-                    # Desktop owns client-side tools and approvals. Any reply here,
-                    # including an error, can steal its shared request callback.
-                    # Without an owning client these actions remain unsupported.
+                    # App Server shares server-request callbacks across subscribers;
+                    # the first reply (even an error) consumes the callback. Leave
+                    # these requests for a capable client subscribed to the thread.
+                    # Silence does not guarantee another client is present.
                     # Reads and waits query the server; no unbounded event history.
                     continue
                 future = self._pending.get(message.get("id"))
