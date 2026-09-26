@@ -43,7 +43,7 @@ class ProxyWebSocket:
         self.websocket: ClientConnection | None = None
         self.sockets: tuple[socket.socket, socket.socket] | None = None
         self.pumps: list[asyncio.Task[None]] = []
-        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
     async def open(cls, socket_path: Path, open_timeout: float, codex_binary: str | None = None):
@@ -114,9 +114,13 @@ class ProxyWebSocket:
         await self.websocket.send(message)
 
     async def close(self):
-        if self._closed:
-            return
-        self._closed = True
+        # A cancelled caller must not cancel reaping the child. Every close
+        # joins the same cleanup, including calls after an earlier cancellation.
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await asyncio.shield(self._close_task)
+
+    async def _close(self):
         try:
             if self.websocket is not None:
                 await self.websocket.close()

@@ -9,6 +9,8 @@ from websockets.asyncio.server import unix_serve
 from websockets.exceptions import InvalidMessage
 
 from codex_thread_bridge import proxy_transport
+from codex_thread_bridge.bridge import Bridge
+from codex_thread_bridge.ledger import Ledger
 from codex_thread_bridge.proxy_transport import ProxyWebSocket, resolve_codex_binary
 from codex_thread_bridge.rpc import AppServer
 
@@ -90,6 +92,71 @@ async def test_cancel_during_handshake_reaps_child(tmp_path, relay_processes):
         with pytest.raises(asyncio.CancelledError):
             await pending
         assert relay_processes[0].returncode is not None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="child deliberately ignores POSIX SIGTERM")
+async def test_cancel_during_close_still_reaps_uncooperative_child(monkeypatch):
+    relay = ProxyWebSocket()
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-u",
+        "-c",
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "print('ready'); time.sleep(60)",
+        stdout=asyncio.subprocess.PIPE,
+    )
+    relay.process = process
+    assert process.stdout is not None
+    terminated = asyncio.Event()
+    terminate = process.terminate
+
+    def record_terminate():
+        terminate()
+        terminated.set()
+
+    monkeypatch.setattr(process, "terminate", record_terminate)
+    try:
+        assert await asyncio.wait_for(process.stdout.readline(), 5) == b"ready\n"
+        closing = asyncio.create_task(relay.close())
+        await asyncio.wait_for(terminated.wait(), 5)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        # A second cancellation cannot abandon the shared cleanup either.
+        another_close = asyncio.create_task(relay.close())
+        await asyncio.sleep(0)
+        another_close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await another_close
+        await asyncio.wait_for(relay.close(), 5)
+        assert process.returncode is not None
+        await relay.close()
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fake upstream uses Unix socket")
+async def test_proxy_lost_mutation_response_is_not_retried(fake_server, tmp_path, relay_processes):
+    fake, sock = fake_server
+    rpc = AppServer(sock, timeout=2, transport="proxy", codex_binary="fake-codex")
+    ledger = Ledger(tmp_path / "operations.sqlite3")
+    bridge = Bridge(rpc, ledger)
+    try:
+        fake.drop_after = "turn/start"
+        result = await bridge.create_thread("lost-response", str(tmp_path), prompt="inspect")
+        assert result["status"] == "outcome_unknown"
+        assert result["threadId"] in fake.threads
+        assert fake.count("turn/start") == 1
+        replay = await bridge.create_thread("lost-response", str(tmp_path), prompt="inspect")
+        assert replay == {**result, "replayed": True}
+        assert fake.count("thread/start") == 1
+        assert fake.count("turn/start") == 1
+    finally:
+        await rpc.close()
+        ledger.close()
+    assert all(process.returncode is not None for process in relay_processes)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake upstream uses Unix socket")
